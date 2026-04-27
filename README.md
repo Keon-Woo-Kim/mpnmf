@@ -134,8 +134,7 @@ Iteratively merges refined programs into metaprograms by gene overlap.
 | `title` | `None` | Prefix for output files; defaults to `"mpnmf"`. |
 | `savepath` | `None` | Output directory; defaults to `./mpnmf/`. |
 
-**Returns:** `nmf_df`, a DataFrame of genes × metaprograms.
-
+**Returns:** `nmf_df`, a DataFrame of genes × metaprograms. The full `MP_dict` (with per-MP `genes`, `scores`, `freq`, and `source_programs` — list of refined programs that were merged into the metaprogram) is saved to `{prefix}_clustered.pkl`.
 
 ## Output files
 

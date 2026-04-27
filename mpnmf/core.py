@@ -92,16 +92,19 @@ def _merge_programs(p1, p2, gene_history, n_genes=50):
 
 
 # =============================================================================
-# Main API
+# Main APIs
 # =============================================================================
 
 def run(adata, krange, sample_key, sample_list, n_genes=50, max_iter=5000,
-        mode='hvg', n_top_genes=7000, min_exp_pct=0.2, scale='auto',
-        title=None, savepath=None):
+        mode='hvg', n_top_genes=7000, min_exp_pct=0.2, scale='auto', title=None, savepath=None):
+
+    krange = list(krange)
+    sample_list = list(sample_list)
 
     start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     t0 = time.time()
-    print(f"\n=== NMF run started. (starting time: {start_time}) ===\n")
+    print(f"\n=== NMF run started. (starting time: {start_time}) ===")
+    print(f"Parameters: krange={krange}, mode={mode}, n_top_genes={n_top_genes}, min_exp_pct={min_exp_pct}, scale={scale}, n_genes={n_genes}\n")
 
     adata_nmf = adata.copy()
 
@@ -152,11 +155,13 @@ def run(adata, krange, sample_key, sample_list, n_genes=50, max_iter=5000,
         nmf_run[sample] = _run_single(adata_nmf, krange, sample_key, sample, n_genes, max_iter)
 
     # Save + report
+    n_programs = sum(len(nmf_run[s][k]['rank']) for s in nmf_run for k in nmf_run[s])
+    print(f"\nRun finished. {len(sample_list)} samples × {len(krange)} ranks → {n_programs} programs.")
     savepath, prefix = _resolve_savepath(savepath, title)
     save_file = os.path.join(savepath, f"{prefix}_run.pkl")
     with open(save_file, 'wb') as f:
         pickle.dump(nmf_run, f)
-    print(f"\n** Saved: {save_file} **")
+    print(f"** Saved: {save_file} **")
 
     end_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     elapsed = (time.time() - t0) / 60
@@ -169,11 +174,12 @@ def refine(nmf_run, samples=None, krange=None, n_genes=None, thres_intra=0.7, th
 
     start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     t0 = time.time()
-    print(f"\n=== NMF refine started. (starting time: {start_time}) ===\n")
+    print(f"\n=== NMF refine started. (starting time: {start_time}) ===")
+    print(f"Parameters: thres_intra={thres_intra}, thres_inter={thres_inter}, thres_redun={thres_redun}")
 
     # Defaults pulled from the input structure.
-    samples = samples or list(nmf_run.keys())
-    krange = krange or list(nmf_run[samples[0]].keys())
+    samples = list(samples) if samples else list(nmf_run.keys())
+    krange = list(krange) if krange else list(nmf_run[samples[0]].keys())
     n_genes = n_genes or len(list(nmf_run[samples[0]][krange[0]]['rank'].values())[0])
 
     # Stage 1: Intra-sample reproducibility
@@ -222,8 +228,9 @@ def refine(nmf_run, samples=None, krange=None, n_genes=None, thres_intra=0.7, th
                 filt4[s][p1] = {"genes": v["genes"], "scores": v["scores"]}
 
     # Flatten per-sample dicts into a single dict of surviving programs.
+    n_initial = sum(len(nmf_run[s][k]['rank']) for s in samples for k in krange)
     nmf_refined = {p: v for s in samples for p, v in filt4[s].items()}
-    print(f"\n** After refining, {len(nmf_refined)} programs are left. **\n")
+    print(f"\nRefinement finished. {n_initial} programs → {len(nmf_refined)} retained.")
 
     # Save + report.
     savepath, prefix = _resolve_savepath(savepath, title)
@@ -243,7 +250,8 @@ def cluster(nmf_refined, n_genes=50, thres_overlap=0.3, min_overlap=5, title=Non
 
     start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     t0 = time.time()
-    print(f"\n=== NMF cluster started. (starting time: {start_time}) ===\n")
+    print(f"\n=== NMF cluster started. (starting time: {start_time}) ===")
+    print(f"Parameters: thres_overlap={thres_overlap}, min_overlap={min_overlap}, n_genes={n_genes}\n")
     
     if not nmf_refined:
         raise ValueError("nmf_refined is empty; nothing to cluster.")
@@ -281,6 +289,7 @@ def cluster(nmf_refined, n_genes=50, thres_overlap=0.3, min_overlap=5, title=Non
         # Initialize the metaprogram with the founder.
         MP = founder_data
         added = {founder}
+        added_ordered = [founder]
         del nmf_refined[founder]
         # Full gene history across all merged partners (used for frequency tally).
         gene_history = list(founder_data["genes"])
@@ -299,6 +308,7 @@ def cluster(nmf_refined, n_genes=50, thres_overlap=0.3, min_overlap=5, title=Non
                 gene_history.extend(nmf_refined[max_p]["genes"])
                 MP = _merge_programs(MP, nmf_refined[max_p], gene_history=gene_history, n_genes=n_genes)
                 added.add(max_p)
+                added_ordered.append(max_p)
                 del nmf_refined[max_p]
             else:
                 break
@@ -306,6 +316,7 @@ def cluster(nmf_refined, n_genes=50, thres_overlap=0.3, min_overlap=5, title=Non
         # Finalize this MP and remove its members from the pool.
         MP_name = f"MP{idx}"
         MP_dict[MP_name] = MP
+        MP["source_programs"] = added_ordered
         idx += 1
         print(f"{MP_name} completed with {len(added)} programs! (Remaining: {len(nmf_refined)}/{n_total})")
         overlap_df = overlap_df.drop(index=list(added), columns=list(added), errors='ignore')
@@ -314,13 +325,14 @@ def cluster(nmf_refined, n_genes=50, thres_overlap=0.3, min_overlap=5, title=Non
     nmf_df = pd.DataFrame({name: pd.Series(mp["genes"]) for name, mp in MP_dict.items()})
 
     # Save + report.
+    print(f"\nClustering finished. {n_total} programs → {len(MP_dict)} metaprograms.")
     savepath, prefix = _resolve_savepath(savepath, title)
     pkl_file = os.path.join(savepath, f"{prefix}_clustered.pkl")
     csv_file = os.path.join(savepath, f"{prefix}.csv")
     with open(pkl_file, 'wb') as f:
         pickle.dump(MP_dict, f)
     nmf_df.to_csv(csv_file, index=False)
-    print(f"\n** Saved: {pkl_file} **")
+    print(f"** Saved: {pkl_file} **")
     print(f"** Saved: {csv_file} **")
 
     end_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
